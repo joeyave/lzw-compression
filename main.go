@@ -2,19 +2,35 @@ package main
 
 import (
 	"github.com/joeyave/lzw-compression/lzw"
-	"io/ioutil"
 	"log"
+	"os"
 )
 
 func main() {
-	data, err := ioutil.ReadFile("test_data/orig/data.txt")
+	input, err := os.Open("test_data/orig/data.txt")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
+	}
+	output, err := os.Create("test_data/compressed/data.txt")
+	if err != nil {
+		panic(err)
 	}
 
-	compressed := lzw.Compress(data)
-	ioutil.WriteFile("test_data/compr/data.txt", compressed, 0666)
+	table := make(map[string]int64)
+	for code := 0; code < 256; code++ {
+		table[string(rune(code))] = int64(code)
+	}
 
-	decompressed := lzw.Decompress(compressed)
-	ioutil.WriteFile("test_data/decompr/data.txt", decompressed, 0666)
+	conf, _ := lzw.SetupConfig(input, output, 20, table)
+	if opt == "-c" {
+		err := lzw.Compress(conf)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else if opt == "-d" {
+		err := lzw.Decompress(conf)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }

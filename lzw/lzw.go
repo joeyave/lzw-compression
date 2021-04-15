@@ -1,178 +1,128 @@
 package lzw
 
 import (
-	"fmt"
-	"strconv"
+	"io"
+	"os"
+
+	"github.com/dgryski/go-bitstream"
 )
 
-const mapSize int64 = 256
+//Compress performs compression according to parameters in Config
+func Compress(fileToCompress *os.File, compressedFile *os.File, dictionary map[string]int64) error {
 
-func Compress(data []byte) []byte {
-	if len(data) < 1 {
-		return []byte{}
+	bitReader := bitstream.NewReader(fileToCompress)
+	bitWriter := bitstream.NewWriter(compressedFile)
+
+	var nextCode int64 = 256
+	var phrase []byte
+	readByte, err := bitReader.ReadByte()
+	if err != nil && err != io.EOF {
+		return err
 	}
 
-	code := mapSize
-	dictionary := make(map[string]int64, code)
+	phrase = append(phrase, readByte)
 
-	for i := int64(0); i < mapSize; i++ {
-		dictionary[string(i)] = i
-	}
+	for {
+		char, err := bitReader.ReadByte()
+		if err == io.EOF {
+			finalCode := dictionary[string(phrase)]
 
-	result := make([]int64, 0)
-	word := make([]byte, 0)
-
-	for _, c := range data {
-		phrase := append(word, c)
-
-		_, ok := dictionary[string(phrase)]
-		if ok {
-			word = phrase
-		} else {
-			result = append(result, dictionary[string(word)])
-			dictionary[string(phrase)] = code
-			code++
-			word = []byte{c}
-		}
-	}
-
-	if len(word) > 0 {
-		result = append(result, dictionary[string(word)])
-	}
-
-	return toBytes(result)
-}
-
-func Decompress(data []byte) []byte {
-
-	if len(data) < 1 {
-		return []byte{}
-	}
-
-	compressed := fromBytes(data)
-
-	code := mapSize
-	dictionary := make(map[int64][]byte, code)
-
-	for i := int64(0); i < mapSize; i++ {
-		dictionary[i] = []byte{byte(i)}
-	}
-
-	result := make([]byte, 0)
-	word := make([]byte, 0)
-
-	for _, k := range compressed {
-		var entry []byte
-		x, ok := dictionary[k]
-
-		if ok {
-			entry = x[:len(x):len(x)]
-		} else if k == code && len(word) > 0 {
-			entry = append(word, word[0])
-		} else {
-			return []byte{}
-		}
-		result = append(result, entry...)
-
-		if len(word) > 0 {
-			word = append(word, entry[0])
-			dictionary[code] = word
-			code++
-		}
-
-		word = entry
-	}
-
-	return result
-}
-
-func toBytes(data []int64) []byte {
-	bitsStr := ""
-	bits := 9
-	idx := mapSize
-	for _, v := range data {
-		if idx > 1<<bits {
-			bits++
-		}
-		format := "%0" + strconv.Itoa(bits) + "b"
-		bitsStr += fmt.Sprintf(format, v)
-		idx++
-	}
-
-	bytes := make([]byte, 0)
-	length := len(bitsStr)
-	size := 8
-	for i := 0; i < length; i += size {
-		end := i + size
-		if end > length {
-			end = length
-		}
-		bitStr := bitsStr[i:end]
-		bit, err := strconv.ParseInt(bitStr, 2, size+1)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-		bytes = append(bytes, byte(bit))
-	}
-
-	return bytes
-}
-
-func trimByteStr(str string) string {
-	length := len(str)
-	trim := ""
-	idx := 8
-	bits := 9
-	i := 0
-	for ; i < length; i += bits {
-		if i+bits > length {
+			if finalCode != 0 {
+				errw := bitWriter.WriteBits(uint64(finalCode), conf.codeWidth)
+				if errw != nil && err != io.EOF {
+					return errw
+				}
+				errw = bitWriter.Flush(false)
+				if errw != nil && err != io.EOF {
+					return err
+				}
+			}
 			break
 		}
-		if idx > 1<<bits {
-			bits++
+		if err != nil && err != io.EOF {
+			return err
 		}
-		idx++
+
+		withChar := string(phrase) + string(char)
+		_, ok := dictionary[withChar]
+
+		if !ok {
+			code := dictionary[string(phrase)]
+			err := bitWriter.WriteBits(uint64(code), conf.codeWidth)
+			if err != nil && err != io.EOF {
+				return err
+			}
+
+			if nextCode < conf.maxCode {
+				dictionary[withChar] = nextCode
+				nextCode++
+			}
+			phrase = nil
+		}
+		phrase = append(phrase, char)
 	}
-
-	size := 8
-	mod := (length - i) % size
-	get := size - mod
-	elem := str[length-get : length]
-	trim = str[:length-size] + elem
-
-	return trim
+	return error(nil)
 }
 
-func fromBytes(data []byte) []int64 {
-	byteStr := ""
-	for _, b := range data {
-		bitStr := fmt.Sprintf("%08b", b)
-		byteStr += bitStr
+// Decompress performs decompression according to parameters in Config
+func Decompress(fileToDecompress *os.File, decompressedFile *os.File, origDictionary map[string]int64) error {
+
+	bitReader := bitstream.NewReader(fileToDecompress)
+	bitWriter := bitstream.NewWriter(decompressedFile)
+
+	dictionary := make(map[int64]string)
+	for key, val := range origDictionary {
+		dictionary[val] = key
 	}
 
-	byteStr = trimByteStr(byteStr)
+	var nextCode int64 = 256
 
-	compressed := make([]int64, 0)
-	bits := 9
-	length := len(byteStr)
-	idx := 256
-	for i := 0; i < length; i += bits {
-		if idx > 1<<bits {
-			bits++
-		}
-		start := i
-		end := i + bits
-		if end > length {
-			end = length
-			start = end - bits
-		}
-		bitStr := byteStr[start:end]
-		bit, err := strconv.ParseInt(bitStr, 2, bits+1)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-		compressed = append(compressed, bit)
-		idx++
+	lastCodeUns, err := bitReader.ReadBits(conf.codeWidth)
+	if err != nil && err != io.EOF {
+		return err
 	}
-	return compressed
+	var lastCode int64 = int64(lastCodeUns)
+
+	// empty file
+	if lastCode == 0 {
+		return error(nil)
+	}
+
+	werr := bitWriter.WriteByte(dictionary[lastCode][0])
+	if werr != nil && werr != io.EOF {
+		return werr
+	}
+	oldCode := lastCode
+
+	for {
+		codeUnsigned, err := bitReader.ReadBits(conf.codeWidth)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if err == io.EOF {
+			break
+		}
+		var code int64 = int64(codeUnsigned)
+
+		var outputString string
+		if _, found := dictionary[code]; !found {
+			lastString := dictionary[oldCode]
+			outputString = lastString + string(lastString[0])
+		} else {
+			outputString = dictionary[code]
+		}
+		for _, val := range []byte(outputString) {
+			werr := bitWriter.WriteByte(val)
+			if werr != nil && werr != io.EOF {
+				return werr
+			}
+		}
+		if nextCode < conf.maxCode {
+			nextStringToAdd := dictionary[oldCode] + string(outputString[0])
+			dictionary[nextCode] = nextStringToAdd
+			nextCode++
+		}
+		oldCode = code
+	}
+	return error(nil)
 }
