@@ -1,21 +1,20 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
 	"github.com/joeyave/lzw-compression/lzw"
-	"os"
+	"io/ioutil"
+	"log"
 )
 
 func main() {
-	fmt.Print("Input string to compress:\n")
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Scan()
-	str := scanner.Text()
+	data, err := ioutil.ReadFile("test_data/orig/data.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	compressed := lzw.Compress(str)
-	fmt.Println("\nCompressed:", compressed)
+	compressed := lzw.Compress(data)
+	ioutil.WriteFile("test_data/compr/data.txt", compressed, 0666)
 
 	decompressed := lzw.Decompress(compressed)
-	fmt.Println("\nDecompressed:", decompressed)
+	ioutil.WriteFile("test_data/decompr/data.txt", decompressed, 0666)
 }
