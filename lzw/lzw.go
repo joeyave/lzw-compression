@@ -1,19 +1,31 @@
 package lzw
 
 import (
+	"github.com/dgryski/go-bitstream"
 	"io"
 	"os"
-
-	"github.com/dgryski/go-bitstream"
 )
 
-//Compress performs compression according to parameters in Config
-func Compress(fileToCompress *os.File, compressedFile *os.File, dictionary map[string]int64) error {
+func Compress(fileToCompress *os.File, compressedFilePath string, dictSize int) error {
+
+	dict := make(map[string]int64, dictSize)
+	for code := 0; code < 256; code++ {
+		dict[string(rune(code))] = int64(code)
+	}
+
+	bits := 9
 
 	bitReader := bitstream.NewReader(fileToCompress)
+
+	compressedFile, err := os.Create(compressedFilePath)
+	if err != nil {
+		return err
+	}
+	defer compressedFile.Close()
+
 	bitWriter := bitstream.NewWriter(compressedFile)
 
-	var nextCode int64 = 256
+	var nextCode = int64(len(dict))
 	var phrase []byte
 	readByte, err := bitReader.ReadByte()
 	if err != nil && err != io.EOF {
@@ -25,10 +37,10 @@ func Compress(fileToCompress *os.File, compressedFile *os.File, dictionary map[s
 	for {
 		char, err := bitReader.ReadByte()
 		if err == io.EOF {
-			finalCode := dictionary[string(phrase)]
+			finalCode := dict[string(phrase)]
 
 			if finalCode != 0 {
-				errw := bitWriter.WriteBits(uint64(finalCode), conf.codeWidth)
+				errw := bitWriter.WriteBits(uint64(finalCode), bits)
 				if errw != nil && err != io.EOF {
 					return errw
 				}
@@ -44,19 +56,23 @@ func Compress(fileToCompress *os.File, compressedFile *os.File, dictionary map[s
 		}
 
 		withChar := string(phrase) + string(char)
-		_, ok := dictionary[withChar]
+		_, ok := dict[withChar]
 
 		if !ok {
-			code := dictionary[string(phrase)]
-			err := bitWriter.WriteBits(uint64(code), conf.codeWidth)
+			code := dict[string(phrase)]
+
+			err := bitWriter.WriteBits(uint64(code), bits)
 			if err != nil && err != io.EOF {
 				return err
 			}
 
-			if nextCode < conf.maxCode {
-				dictionary[withChar] = nextCode
-				nextCode++
+			if nextCode > 1<<bits {
+				bits++
 			}
+
+			dict[withChar] = nextCode
+			nextCode++
+
 			phrase = nil
 		}
 		phrase = append(phrase, char)
@@ -64,64 +80,80 @@ func Compress(fileToCompress *os.File, compressedFile *os.File, dictionary map[s
 	return error(nil)
 }
 
-// Decompress performs decompression according to parameters in Config
-func Decompress(fileToDecompress *os.File, decompressedFile *os.File, origDictionary map[string]int64) error {
+func Decompress(fileToDecompress *os.File, decompressedFilePath string, dictSize int) error {
+
+	bits := 9
 
 	bitReader := bitstream.NewReader(fileToDecompress)
+
+	decompressedFile, err := os.Create(decompressedFilePath)
+	if err != nil {
+		return err
+	}
+	defer decompressedFile.Close()
+
 	bitWriter := bitstream.NewWriter(decompressedFile)
 
-	dictionary := make(map[int64]string)
-	for key, val := range origDictionary {
-		dictionary[val] = key
+	dict := make(map[int64]string, dictSize)
+	for code := 0; code < 256; code++ {
+		dict[int64(code)] = string(rune(code))
 	}
 
-	var nextCode int64 = 256
+	var nextCode = int64(len(dict))
 
-	lastCodeUns, err := bitReader.ReadBits(conf.codeWidth)
+	lastCodeUns, err := bitReader.ReadBits(bits)
 	if err != nil && err != io.EOF {
 		return err
 	}
-	var lastCode int64 = int64(lastCodeUns)
+	var lastCode = int64(lastCodeUns)
 
-	// empty file
+	// If file is empty.
 	if lastCode == 0 {
 		return error(nil)
 	}
 
-	werr := bitWriter.WriteByte(dictionary[lastCode][0])
+	werr := bitWriter.WriteByte(dict[lastCode][0])
 	if werr != nil && werr != io.EOF {
 		return werr
 	}
 	oldCode := lastCode
 
 	for {
-		codeUnsigned, err := bitReader.ReadBits(conf.codeWidth)
+
+		if nextCode > 1<<bits {
+			bits++
+		}
+
+		codeUnsigned, err := bitReader.ReadBits(bits)
 		if err != nil && err != io.EOF {
 			return err
 		}
 		if err == io.EOF {
 			break
 		}
-		var code int64 = int64(codeUnsigned)
+		var code = int64(codeUnsigned)
 
 		var outputString string
-		if _, found := dictionary[code]; !found {
-			lastString := dictionary[oldCode]
+		_, ok := dict[code]
+
+		if !ok {
+			lastString := dict[oldCode]
 			outputString = lastString + string(lastString[0])
 		} else {
-			outputString = dictionary[code]
+			outputString = dict[code]
 		}
+
 		for _, val := range []byte(outputString) {
 			werr := bitWriter.WriteByte(val)
 			if werr != nil && werr != io.EOF {
 				return werr
 			}
 		}
-		if nextCode < conf.maxCode {
-			nextStringToAdd := dictionary[oldCode] + string(outputString[0])
-			dictionary[nextCode] = nextStringToAdd
-			nextCode++
-		}
+
+		nextStringToAdd := dict[oldCode] + string(outputString[0])
+		dict[nextCode] = nextStringToAdd
+		nextCode++
+
 		oldCode = code
 	}
 	return error(nil)
