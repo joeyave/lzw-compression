@@ -3,8 +3,11 @@ package lzw
 import (
 	"github.com/dgryski/go-bitstream"
 	"io"
+	"math"
 	"os"
 )
+
+var bitsNum = 9
 
 func Compress(fileToCompress *os.File, compressedFilePath string, dictSize int) error {
 
@@ -13,7 +16,7 @@ func Compress(fileToCompress *os.File, compressedFilePath string, dictSize int) 
 		dict[string(rune(code))] = int64(code)
 	}
 
-	bits := 9
+	bits := int(math.Sqrt(float64(dictSize)) + 1)
 
 	bitReader := bitstream.NewReader(fileToCompress)
 
@@ -82,7 +85,7 @@ func Compress(fileToCompress *os.File, compressedFilePath string, dictSize int) 
 
 func Decompress(fileToDecompress *os.File, decompressedFilePath string, dictSize int) error {
 
-	bits := 9
+	bits := int(math.Sqrt(float64(dictSize)) + 1)
 
 	bitReader := bitstream.NewReader(fileToDecompress)
 
